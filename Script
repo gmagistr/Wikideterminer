@@ -1,0 +1,142 @@
+import requests
+from bs4 import BeautifulSoup
+import re
+import time
+from datetime import datetime, timedelta
+
+def ottieni_articoli_e_sottocategorie(categoria, limite=50, articoli_analizzati=set()):
+    url = "https://nl.wikipedia.org/w/api.php"
+    articoli = []
+    categorie_visitate = set()
+
+    def esplora_categoria(categoria, limite):
+        nonlocal articoli
+        cmcontinue = None
+
+        while len(articoli) < limite:
+            params = {
+                "action": "query",
+                "format": "json",
+                "list": "categorymembers",
+                "cmtitle": f"Category:{categoria}",
+                "cmlimit": min(50, limite - len(articoli)),
+                "cmcontinue": cmcontinue,
+            }
+
+            response = requests.get(url, params=params)
+            data = response.json()
+
+            for item in data["query"]["categorymembers"]:
+                if item["ns"] == 0 and item["title"] not in articoli_analizzati:  # only new articles
+                    articoli.append(item["title"])
+                elif item["ns"] == 14:  # for categories
+                    sottocategoria = item["title"].replace("Categorie:", "")
+                    if sottocategoria not in categorie_visitate:
+                        categorie_visitate.add(sottocategoria)
+                        esplora_categoria(sottocategoria, limite)  # Recursion
+
+        
+            if "continue" in data:
+                cmcontinue = data["continue"]["cmcontinue"]
+            else:
+                break
+
+    esplora_categoria(categoria, limite)
+    return articoli[:limite]
+
+
+def trova_frasi_die_dat_con_precedenti(titolo):
+    """Trova le frasi che iniziano con Die o Dat in un articolo dato il titolo."""
+    url = f"https://nl.wikipedia.org/wiki/{titolo.replace(' ', '_')}"
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        print(f"Errore '{titolo}': {e}")
+        return [], 0, 0
+
+    soup = BeautifulSoup(response.text, 'html.parser')
+    paragrafi = soup.find_all('p')
+    frasi_trovate = []
+    die_count = 0
+    dat_count = 0
+
+    for paragrafo in paragrafi:
+        testo = paragrafo.get_text()
+        frasi = re.split(r'(?<=[.!?])\s+', testo)
+
+        for i, frase in enumerate(frasi):
+            if re.match(r'\b(Die|Dat)\b', frase):
+                frase_corrente = frase.strip()
+                frase_n_1 = frasi[i - 1].strip() if i > 0 else None
+                frase_n_2 = frasi[i - 2].strip() if i > 1 else None
+                frasi_trovate.append((frase_n_2, frase_n_1, frase_corrente))
+
+                die_count += len(re.findall(r'\bDie\b', frase_corrente))
+                dat_count += len(re.findall(r'\bDat\b', frase_corrente))
+
+    return frasi_trovate, die_count, dat_count
+
+
+def salva_risultato_testo(titolo, frasi, file_path="output.txt"):
+    with open(file_path, "a", encoding="utf-8") as file:
+        file.write(f"Article: {titolo}\n")
+        for frase_n_2, frase_n_1, frase_corrente in frasi:
+            if frase_n_2:
+                file.write(f"U(n-2): {frase_n_2}\n")
+            if frase_n_1:
+                file.write(f"U(n-1): {frase_n_1}\n")
+            file.write(f"U(n): {frase_corrente}\n")
+            file.write("-" * 50 + "\n")
+        file.write("\n\n")
+
+
+
+categorie = ["Natuur"]
+articoli_totali = 0
+articoli_con_risultato = 0
+totale_die = 0
+totale_dat = 0
+articoli_analizzati = set()
+start_time = datetime.now()
+max_duration = timedelta(days=1)
+
+
+file_path = "output.txt"
+open(file_path, "w").close()
+
+for categoria in categorie:
+    if datetime.now() - start_time >= max_duration:
+        break  # Si ferma dopo un giorno
+
+    articoli = ottieni_articoli_e_sottocategorie(categoria, limite=1000, articoli_analizzati=articoli_analizzati)
+    articoli_totali += len(articoli)
+
+    for titolo in articoli:
+        if datetime.now() - start_time >= max_duration:
+            break  
+        print(f"\nAnalysing article: {titolo}")
+        frasi, die_count, dat_count = trova_frasi_die_dat_con_precedenti(titolo)
+
+        if frasi:
+            articoli_con_risultato += 1
+            totale_die += die_count
+            totale_dat += dat_count
+
+           
+            print(f"\nResults for article: {titolo}")
+            for frase_n_2, frase_n_1, frase_corrente in frasi:
+                if frase_n_2:
+                    print(f"U(n-2): {frase_n_2}")
+                if frase_n_1:
+                    print(f"U(n-1): {frase_n_1}")
+                print(f"U(n): {frase_corrente}")
+                print("-" * 50)
+
+          
+            salva_risultato_testo(titolo, frasi, file_path)
+
+        articoli_analizzati.add(titolo)  
+        time.sleep(5)  
+
+print(f"Finished. Analysis saved in '{file_path}'")
